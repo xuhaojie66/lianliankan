@@ -12,7 +12,8 @@ import { audio } from "./audio";
 
 const BASE_POINTS = 10;
 const COMBO_WINDOW_MS = 5000;
-const PATH_ANIM_MS = 340;
+const PATH_ANIM_MS = 420;
+const TIME_BONUS_PER_MATCH = 3;
 
 function setupLevel(level, prevScore, best) {
   const cfg = LEVELS[level];
@@ -32,7 +33,9 @@ function setupLevel(level, prevScore, best) {
     hintsLeft: cfg.hints,
     shufflesLeft: cfg.shuffles,
     hintPair: null,
+    hintPath: null,
     path: null,
+    paused: false,
     best,
   };
 }
@@ -52,7 +55,9 @@ const initialState = {
   hintsLeft: LEVELS[0].hints,
   shufflesLeft: LEVELS[0].shuffles,
   hintPair: null,
+  hintPath: null,
   path: null,
+  paused: false,
   best: 0,
 };
 
@@ -68,7 +73,7 @@ function reducer(state, action) {
       return setupLevel(state.level, state.score, state.best);
 
     case "SELECT":
-      return { ...state, selected: action.pos, hintPair: null };
+      return { ...state, selected: action.pos, hintPair: null, hintPath: null };
 
     case "MATCH": {
       const { a, b, path } = action;
@@ -85,11 +90,13 @@ function reducer(state, action) {
         board,
         selected: null,
         hintPair: null,
+        hintPath: null,
         path,
         combo,
         lastMatchAt: now,
         score,
         best: Math.max(state.best, score),
+        timeLeft: state.timeLeft + TIME_BONUS_PER_MATCH,
       };
     }
 
@@ -125,11 +132,21 @@ function reducer(state, action) {
       if (state.hintsLeft <= 0) return state;
       const pair = findHint(state.board, state.rows, state.cols);
       if (!pair) return state;
-      return { ...state, hintPair: pair, hintsLeft: state.hintsLeft - 1 };
+      const hintPath = connectPath(state.board, state.rows, state.cols, pair[0], pair[1]);
+      return {
+        ...state,
+        hintPair: pair,
+        hintPath,
+        hintsLeft: state.hintsLeft - 1,
+      };
     }
 
     case "CLEAR_HINT":
-      return { ...state, hintPair: null };
+      return { ...state, hintPair: null, hintPath: null };
+
+    case "TOGGLE_PAUSE":
+      if (state.status !== "playing") return state;
+      return { ...state, paused: !state.paused, selected: null };
 
     case "SHUFFLE": {
       if (state.shufflesLeft <= 0) return state;
@@ -139,6 +156,7 @@ function reducer(state, action) {
         board,
         selected: null,
         hintPair: null,
+        hintPath: null,
         shufflesLeft: state.shufflesLeft - 1,
       };
     }
@@ -167,6 +185,7 @@ export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [sfxOn, setSfxOn] = useState(true);
   const [bgmOn, setBgmOn] = useState(true);
+  const [timeFxKey, setTimeFxKey] = useState(0);
   const audioReady = useRef(false);
 
   const {
@@ -182,7 +201,9 @@ export default function App() {
     hintsLeft,
     shufflesLeft,
     hintPair,
+    hintPath,
     path,
+    paused,
     remaining,
     best,
   } = state;
@@ -198,10 +219,10 @@ export default function App() {
 
   // Countdown timer.
   useEffect(() => {
-    if (status !== "playing") return;
+    if (status !== "playing" || paused) return;
     const id = setInterval(() => dispatch({ type: "TICK" }), 1000);
     return () => clearInterval(id);
-  }, [status]);
+  }, [status, paused]);
 
   // After a match, show the connect line briefly then clear the tiles.
   useEffect(() => {
@@ -229,7 +250,7 @@ export default function App() {
   };
 
   const handleTile = (r, c) => {
-    if (status !== "playing" || path) return;
+    if (status !== "playing" || paused || path) return;
     const cell = board[r][c];
     if (!cell || cell.matched) return;
 
@@ -245,10 +266,22 @@ export default function App() {
     const p = connectPath(board, rows, cols, selected, { r, c });
     if (p) {
       audio.playSfx("match");
+      setTimeFxKey((k) => k + 1);
       dispatch({ type: "MATCH", a: selected, b: { r, c }, path: p });
     } else {
       audio.playSfx("error");
       dispatch({ type: "SELECT", pos: { r, c } });
+    }
+  };
+
+  const togglePause = () => {
+    if (status !== "playing") return;
+    const willPause = !paused;
+    dispatch({ type: "TOGGLE_PAUSE" });
+    if (willPause) {
+      audio.stopBgm();
+    } else if (bgmOn) {
+      audio.startBgm();
     }
   };
 
@@ -317,11 +350,22 @@ export default function App() {
           <div className="grid grid-cols-4 gap-2 mb-3 text-center">
             <Stat label="关卡" value={`${level + 1}/${LEVELS.length}`} />
             <Stat label="分数" value={score} />
-            <Stat
-              label="时间"
-              value={formatTime(timeLeft)}
-              danger={timeLeft <= 15}
-            />
+            <div className="relative">
+              <Stat
+                label="时间"
+                value={formatTime(timeLeft)}
+                danger={timeLeft <= 15}
+              />
+              {timeFxKey > 0 && (
+                <span
+                  key={timeFxKey}
+                  className="absolute -top-1 right-1 text-emerald-400 font-bold text-sm pointer-events-none"
+                  style={{ animation: "floatUp 0.9s ease forwards" }}
+                >
+                  +{TIME_BONUS_PER_MATCH}s
+                </span>
+              )}
+            </div>
             <Stat label="最高分" value={best} />
           </div>
         )}
@@ -352,6 +396,12 @@ export default function App() {
                 洗牌 ({shufflesLeft})
               </button>
               <button
+                onClick={togglePause}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-sky-500 hover:bg-sky-600 transition-all"
+              >
+                {paused ? "▶ 继续" : "⏸ 暂停"}
+              </button>
+              <button
                 onClick={() => dispatch({ type: "RESTART_LEVEL" })}
                 className="px-3 py-1.5 rounded-lg text-sm font-medium bg-white/10 hover:bg-white/20 transition-all"
               >
@@ -367,7 +417,8 @@ export default function App() {
             <div className="text-6xl">🀄🎴🧩</div>
             <p className="text-white/70 max-w-md leading-relaxed">
               点选两个相同的图案，若能用不超过两个拐角的通路连上就消除。
-              在倒计时结束前消完全部方块即可通关，共 {LEVELS.length} 关，难度递增。
+              每消除一对 +{TIME_BONUS_PER_MATCH} 秒，在倒计时结束前消完全部方块即可通关，
+              共 {LEVELS.length} 关，难度递增。中途可随时暂停。
             </p>
             <button
               onClick={startGame}
@@ -382,7 +433,9 @@ export default function App() {
         {board && status !== "ready" && (
           <div className="relative bg-black/20 rounded-2xl p-2 sm:p-3 select-none">
             <div
-              className="grid gap-1 sm:gap-1.5"
+              className={`grid gap-1 sm:gap-1.5 transition-[filter] ${
+                paused ? "blur-md" : ""
+              }`}
               style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
             >
               {board.map((row, r) =>
@@ -417,7 +470,27 @@ export default function App() {
               )}
             </div>
 
-            {/* Connect-line overlay */}
+            {/* Hint connect-line (flashing) */}
+            {hintPath && !path && !paused && (
+              <svg
+                className="absolute inset-0 w-full h-full pointer-events-none"
+                viewBox={`0 0 ${cols} ${rows}`}
+                preserveAspectRatio="none"
+                style={{ overflow: "visible" }}
+              >
+                <polyline
+                  points={hintPath.map((p) => `${p.c + 0.5},${p.r + 0.5}`).join(" ")}
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth="0.12"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ animation: "hintLine 0.7s ease-in-out infinite" }}
+                />
+              </svg>
+            )}
+
+            {/* Match connect-line: fades out in sync with the tiles */}
             {path && (
               <svg
                 className="absolute inset-0 w-full h-full pointer-events-none"
@@ -426,18 +499,32 @@ export default function App() {
                 style={{ overflow: "visible" }}
               >
                 <polyline
-                  points={path
-                    .map((p) => `${p.c + 0.5},${p.r + 0.5}`)
-                    .join(" ")}
+                  points={path.map((p) => `${p.c + 0.5},${p.r + 0.5}`).join(" ")}
                   fill="none"
                   stroke="#facc15"
                   strokeWidth="0.12"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   strokeDasharray="0.3 0.2"
-                  style={{ animation: "dashFlow 0.5s linear infinite" }}
+                  style={{
+                    animation: `dashFlow 0.5s linear infinite, matchLine ${PATH_ANIM_MS}ms ease forwards`,
+                  }}
                 />
               </svg>
+            )}
+
+            {/* Pause overlay */}
+            {paused && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 rounded-2xl bg-black/40 z-10">
+                <div className="text-5xl">⏸</div>
+                <p className="text-xl font-bold">已暂停</p>
+                <button
+                  onClick={togglePause}
+                  className="px-6 py-2.5 bg-sky-500 hover:bg-sky-600 rounded-xl font-bold transition-all"
+                >
+                  ▶ 继续游戏
+                </button>
+              </div>
             )}
           </div>
         )}

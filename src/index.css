@@ -23,3 +23,22 @@
 @keyframes dashFlow {
   to { stroke-dashoffset: -24; }
 }
+
+@keyframes floatUp {
+  0% { opacity: 0; transform: translateY(4px); }
+  20% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-16px); }
+}
+
+@keyframes matchLine {
+  0% { opacity: 0.2; }
+  20% { opacity: 1; }
+  65% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes hintLine {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
